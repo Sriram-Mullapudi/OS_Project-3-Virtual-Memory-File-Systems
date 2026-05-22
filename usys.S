@@ -5,7 +5,7 @@
   .globl name; \
   name: \
     movl $SYS_ ## name, %eax; \
-    int $T_SYSCALL; \
+   int $T_SYSCALL; \
     ret
 
 SYSCALL(fork)
@@ -29,3 +29,9 @@ SYSCALL(getpid)
 SYSCALL(sbrk)
 SYSCALL(sleep)
 SYSCALL(uptime)
+SYSCALL(hello)
+SYSCALL(ticks_running)
+SYSCALL(sjf_job_length)
+SYSCALL(set_sched_priority)
+SYSCALL(get_sched_priority)
+SYSCALL(set_sched_priority_with_id)

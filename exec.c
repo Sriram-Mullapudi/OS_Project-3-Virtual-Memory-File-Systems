@@ -101,6 +101,7 @@ exec(char *path, char **argv)
   curproc->tf->esp = sp;
   switchuvm(curproc);
   freevm(oldpgdir);
+  curproc->priority = PRIORITY_MEDIUM;
   return 0;
 
  bad:

@@ -13,12 +13,21 @@ struct {
 } ptable;
 
 static struct proc *initproc;
-
+unsigned long int next = 1;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
+int rand(void) {
+  next = next * 1103515245 + 12345;
+  return ((unsigned int)next / 65536) % 32768;
+}
+
+int get_random(int min, int max){
+	return rand()%max+min;
+}
 
 void
 pinit(void)
@@ -88,6 +97,9 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->burst_time = 0;
+  p->predicted_burst = rand();
+  p->priority = PRIORITY_LOW;
 
   release(&ptable.lock);
 
@@ -329,29 +341,129 @@ scheduler(void)
   for(;;){
     // Enable interrupts on this processor.
     sti();
-
+    
     // Loop over process table looking for process to run.
+    #ifdef SJF
+    int min_burst_time = 9999999;
+    struct proc *shortest_job = 0;
+    
+    acquire(&ptable.lock);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    
+      if(p->state != RUNNABLE)
+        continue;
+      
+      if(min_burst_time > p->predicted_burst){shortest_job = p;min_burst_time = p->predicted_burst;}
+    }
+    if(shortest_job != 0) {
+      p = shortest_job;
+      //cprintf("pid:%d  pbtime: %d\n", p->pid, p->predicted_burst);
+      c->proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+      
+      uint ticks_start;
+
+      acquire(&tickslock);
+      ticks_start = ticks;
+      release(&tickslock);
+      
+      swtch(&(c->scheduler), p->context);
+      switchkvm();
+      
+      uint ticks_end;
+
+      acquire(&tickslock);
+      ticks_end = ticks;
+      release(&tickslock);
+      
+      p->burst_time += (ticks_end - ticks_start);
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+     }
+     release(&ptable.lock);
+    #elif PRIORITY
+    acquire(&ptable.lock);
+
+        struct proc *selected = 0;
+        int min_burst = 9999999;  // Large initial burst time.
+        //int current_priority = PRIORITY_LOW + 1;  // Start with the lowest priority.
+
+        // Iterate through priorities: High -> Medium -> Low.
+        for (int priority = PRIORITY_HIGH; priority <= PRIORITY_LOW; priority++) {
+            for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+                if (p->state == RUNNABLE && p->priority == priority) {
+                    // If multiple processes have the same priority, use SJF.
+                    if (p->predicted_burst < min_burst) {
+                        min_burst = p->predicted_burst;
+                        selected = p;
+                        //current_priority = priority;
+                    }
+                }
+            }
+            // If we found a process at the current priority, break out.
+            if (selected) break;
+        }
+
+        if (selected) {
+            // Run the selected process.
+            c->proc = selected;
+            switchuvm(selected);
+            selected->state = RUNNING;
+
+            uint ticks_start, ticks_end;
+            acquire(&tickslock);
+            ticks_start = ticks;
+            release(&tickslock);
+
+            swtch(&c->scheduler, selected->context);  // Context switch to the selected process.
+            switchkvm();  // Switch back to kernel mode.
+
+            acquire(&tickslock);
+            ticks_end = ticks;
+            release(&tickslock);
+
+            // Update the burst time.
+            selected->burst_time += (ticks_end - ticks_start);
+
+            c->proc = 0;
+        }
+
+        release(&ptable.lock);
+    #else
     acquire(&ptable.lock);
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
-
+      //cprintf("pid:%d  pbtime: %d\n", p->pid, p->predicted_burst);
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
+      uint ticks_start;
 
+      acquire(&tickslock);
+      ticks_start = ticks;
+      release(&tickslock);
+      
       swtch(&(c->scheduler), p->context);
       switchkvm();
+      
+      uint ticks_end;
 
+      acquire(&tickslock);
+      ticks_end = ticks;
+      release(&tickslock);
+      p->burst_time += (ticks_end - ticks_start);
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
     }
     release(&ptable.lock);
-
+    #endif
   }
 }
 
@@ -531,4 +643,86 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+struct spinlock tickslock;
+void init_tickslock(void){
+	initlock(&tickslock,"ticks");
+}
+
+void sleep_ticks(int ticks){
+	acquire(&tickslock);
+	sleep(&ticks,&tickslock);
+	release(&tickslock);
+}
+
+int
+ticks_running(int pid) {
+    
+    struct proc *p;
+    acquire(&ptable.lock);
+    
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->pid == pid){
+          if(p->state != RUNNING && p->state != RUNNABLE){release(&ptable.lock);return -1;}
+          release(&ptable.lock);
+          return p->burst_time;
+        }
+    }
+    release(&ptable.lock);
+    return -1;
+}
+
+int
+sjf_job_length(int pid) {
+    
+    struct proc *p;
+    acquire(&ptable.lock);
+    
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if (p->pid == pid){
+            
+            if(p->state != RUNNING && p->state != RUNNABLE){release(&ptable.lock);return -1;}
+            release(&ptable.lock);
+            return p->predicted_burst;
+        }
+    }
+    
+    release(&ptable.lock);
+    return -1;
+}
+
+void set_sched_priority(int priority){
+	// changes the priority of the current process
+	myproc()->priority = priority;
+	return;
+}
+
+int get_sched_priority(int pid){
+	struct proc *p;
+	acquire(&ptable.lock);
+	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+		if (p->pid == pid && (p->state == RUNNING || p->state == RUNNABLE)) {
+        		release(&ptable.lock);
+            		return p->priority; // Return priority
+		}
+	}
+	release(&ptable.lock);
+	return -1;
+	
+}
+
+void set_sched_priority_with_id(int pid, int priority){
+	struct proc *p;
+	acquire(&ptable.lock);
+	for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+		if (p->pid == pid && (p->state == RUNNING || p->state == RUNNABLE)) {
+        		release(&ptable.lock);
+        		p->priority = priority;
+            		return; 
+		}
+	}
+	release(&ptable.lock);
+	return;
+	
 }

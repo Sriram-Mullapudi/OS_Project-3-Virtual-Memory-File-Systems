@@ -7,11 +7,12 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "vm.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
-struct spinlock tickslock;
+extern struct spinlock tickslock;
 uint ticks;
 
 void
@@ -36,6 +37,7 @@ idtinit(void)
 void
 trap(struct trapframe *tf)
 {
+char* mem;int va;
   if(tf->trapno == T_SYSCALL){
     if(myproc()->killed)
       exit();
@@ -77,7 +79,82 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
+case T_PGFLT:
+      #ifdef LAZY
+        
+        va = rcr2();
+        struct proc *curproc = myproc();
+        cprintf("LAZY -- Pagefault for pid: %d\n", curproc->pid);
+        va = PGROUNDDOWN(va);
+        if(va <= curproc->sz){
+          mem = kalloc();
+          if(mem == 0){
+            cprintf("LAZY -- Out of memory for pid %d\n", curproc->pid);
+            myproc()->killed = 1;
+          }else{
+            memset(mem, 0, PGSIZE);
+            if(mappages(curproc->pgdir, (char*)va, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+              cprintf("LAZY -- Mapping failed for pid %d at va %x\n", curproc->pid, va);
+              myproc()->killed = 1;
+            }else{
+            	cprintf("LAZY -- Allocated & mapped page: pid %d va %x\n", curproc->pid, va);
+            	break;
+            }
+          }
+        }else{
+          cprintf("pid %d %s: trap %d err %d on cpu %d "
+          "eip 0x%x addr 0x%x--kill proc\n",
+          myproc()->pid, myproc()->name, tf->trapno,
+          tf->err, cpuid(), tf->eip, rcr2());
+          myproc()->killed = 1;
+        }
+      #endif
+      #ifdef LOCALITY
+      		
+	    va = rcr2(); 
+	    struct proc *curproc = myproc(); 
+	    cprintf("LOCALITY -- Pagefault for pid: %d\n", curproc->pid);
+	    va = PGROUNDDOWN(va); 
 
+	    
+	    if (va >= curproc->sz || va >= KERNBASE) {
+		cprintf("LOCALITY -- Invalid page fault address: pid %d va %x\n", curproc->pid, va);
+		curproc->killed = 1; 
+		break;
+	    }
+
+	    
+	    for (int i = 0; i < 3; i++) {
+		uint new_va = va + i * PGSIZE; 
+
+		
+		pte_t *pte = walkpgdir(curproc->pgdir, (void*)new_va, 0);
+		if (pte && (*pte & PTE_P)) 
+		    continue;
+
+		
+		mem = kalloc();
+		if (mem == 0) {
+		    cprintf("LOCALITY -- Out of memory for pid %d\n", curproc->pid);
+		    curproc->killed = 1; 
+		    break;
+		}
+		memset(mem, 0, PGSIZE); 
+
+		
+		if (mappages(curproc->pgdir, (void*)new_va, PGSIZE, V2P(mem), PTE_W | PTE_U) < 0) {
+		    kfree(mem); 
+		    cprintf("LOCALITY -- Mapping failed for pid %d at va %x\n", curproc->pid, new_va);
+		    curproc->killed = 1;
+		    break;
+		}else{
+			cprintf("LOCALITY -- Allocated and mapped page: pid %d va %x\n", curproc->pid, new_va);
+			//break //TODO Uncomment this when you comment cprintf
+		}
+	    }
+	#endif
+
+	break;
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
@@ -100,11 +177,13 @@ trap(struct trapframe *tf)
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
     exit();
 
+    #if !defined(SJF) && !defined(PRIORITY)
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.
   if(myproc() && myproc()->state == RUNNING &&
      tf->trapno == T_IRQ0+IRQ_TIMER)
     yield();
+  #endif
 
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)

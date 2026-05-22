@@ -23,6 +23,16 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int hello(void);
+int sleep(int);
+int ticks_running(int);
+int sjf_job_length(int);
+int set_sched_priority(int);
+int get_sched_priority(int);
+int get_sched_priority_with_id(int, int);
+int lseek(int fd, int offset);
+int syscall(int num, ...);
+int syscall(int, ...);
 
 // ulib.c
 int stat(const char*, struct stat*);

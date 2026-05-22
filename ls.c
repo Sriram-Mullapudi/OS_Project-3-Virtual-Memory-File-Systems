@@ -23,7 +23,7 @@ fmtname(char *path)
 }
 
 void
-ls(char *path)
+ls(char *path,int show_all)
 {
   char buf[512], *p;
   int fd;
@@ -63,7 +63,14 @@ ls(char *path)
         printf(1, "ls: cannot stat %s\n", buf);
         continue;
       }
-      printf(1, "%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
+      if(!show_all && de.name[0] == '.'){
+	      continue; //Skip hiddenfiles
+      }
+      printf(1, "%s %d %d %d\n", fmtname(buf), st.type, st. ino, st.size);
+      if(st.type == T_DIR){
+	  printf(1,"/");
+	}
+      	printf(1,"\n");
     }
     break;
   }
@@ -74,12 +81,19 @@ int
 main(int argc, char *argv[])
 {
   int i;
+  int show_all = 0; 
+
+  if(argc>1 && strcmp(argv[1],"-a") ==0){
+	  show_all=1;
+	  argc --;
+	  argv ++ ;
+  }
 
   if(argc < 2){
-    ls(".");
+    ls(".",show_all);
     exit();
   }
   for(i=1; i<argc; i++)
-    ls(argv[i]);
+    ls(argv[i],show_all);
   exit();
-}
+} 
